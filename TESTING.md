@@ -1,5 +1,18 @@
 # Testing / 验收范围
 
+## v0.1.3 regression
+
+- 54 automated assertions pass, including native-login state modeling with an injected fake service, enable/disable idempotence, approval handling, failure reporting and silent-startup policy.
+- No actual login registration is performed by tests. Installation is verified; real enabling/disabling through SMAppService and next-login launch remain pending validation.
+- `--verify-background` exercises actual AppKit startup without a settings/chooser panel or foreground activation. AppKit's menu-bar internal windows are not treated as application panels.
+- `--verify-background` actual AppKit test passed: `accessory=true, menuBar=true, chooser=false, active=false`. Only NSStatusBarWindow internal windows were visible; no application panel or foreground activation.
+- Actual login service read-only status in the development bundle was unavailable; do not claim real enabling or subsequent-login launch is verified until tested from the installed, signed app.
+- The binary has `LSUIElement=true` and retains accessory activation policy. Incoming web links still invoke the chooser.
+- Installed application has been updated to v0.1.3 at `/Applications/DFBrowser.app` after user authorization, with a v0.1.2 ZIP backup retained. The old process quit gracefully, the new executable matches the build, and signature verification passed. The update used background launching and preserved the HTTP/HTTPS default-browser association.
+- Installed running-process verification passed: accessory activation policy (no Dock), `active=false`, and zero onscreen regular panels. No foreground window was opened during the update.
+- Login startup was not enabled. A read-only diagnostic from the installed app still reports the ServiceManagement state as unavailable; real enabling/disabling and next-login launch remain unverified.
+- The v0.1.3 release is an early preview. Menu-bar startup is verified; login startup remains experimental and unavailable on the tested installation. Existing v0.1.2 release assets are retained.
+
 ## Automated verification for v0.1.2
 
 On macOS 15, Apple Silicon, using Swift 6.1.2 in Swift 5 language mode:

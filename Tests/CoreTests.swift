@@ -8,6 +8,24 @@ func check(_ condition: @autoclosure () -> Bool, _ name: String) {
     if !condition() { failures.append(name); print("FAIL: \(name)") }
 }
 
+@MainActor
+final class MockLoginItemService: LoginItemServicing {
+    var state: LoginItemState = .disabled
+    var enableCalls = 0
+    var disableCalls = 0
+    var fail = false
+    func enable() throws {
+        enableCalls += 1
+        if fail { throw NSError(domain: "Test", code: 1) }
+        state = .enabled
+    }
+    func disable() throws {
+        disableCalls += 1
+        if fail { throw NSError(domain: "Test", code: 2) }
+        state = .disabled
+    }
+}
+
 @main
 struct CoreTests {
     static func main() {
@@ -93,6 +111,35 @@ struct CoreTests {
             try BrowserRegistration.registerApplication(at: URL(fileURLWithPath: "/not-installed/DFBrowser.app"))
             check(false, "invalid registration must fail")
         } catch { check(true, "invalid bundle rejected before registration") }
+        MainActor.assumeIsolated {
+            let fake = MockLoginItemService()
+            let controller = LoginItemController(service: fake)
+            check(fake.enableCalls == 0, "creating login controller never auto-registers")
+            controller.refresh()
+            check(controller.state == .disabled, "login switch initial system state")
+            controller.setEnabled(true)
+            check(controller.state == .enabled && fake.enableCalls == 1, "explicit enabling calls service")
+            controller.setEnabled(true)
+            check(fake.enableCalls == 1, "idempotent enabling")
+            controller.setEnabled(false)
+            check(controller.state == .disabled && fake.disableCalls == 1, "disabling unregisters")
+            controller.setEnabled(false)
+            check(fake.disableCalls == 1, "idempotent disabling")
+            fake.state = .requiresApproval
+            controller.refresh()
+            check(controller.state.toggleIsOn && controller.state != .enabled, "pending approval is not claimed as enabled")
+            controller.setEnabled(false)
+            check(controller.state == .disabled, "pending approval can be cancelled")
+            fake.fail = true
+            controller.setEnabled(true)
+            check(controller.state == .disabled && controller.errorMessage != nil, "enable failure cannot optimistically turn switch on")
+            fake.fail = false
+            fake.state = .unavailable
+            controller.refresh()
+            check(!controller.state.toggleIsOn, "unavailable service is not enabled")
+        }
+        check(!AppLaunchPolicy.shouldShowChooser(hasPendingLink: false), "normal and login launch stay windowless")
+        check(AppLaunchPolicy.shouldShowChooser(hasPendingLink: true), "cold URL launch still shows chooser")
         print("\(assertions) assertions, \(failures.count) failures")
         if !failures.isEmpty { exit(1) }
     }

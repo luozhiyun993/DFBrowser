@@ -4,11 +4,24 @@ A lightweight native macOS browser picker. When another app opens a web link thr
 
 一个原生 macOS 浏览器选择器：其他软件通过系统打开网页链接时，先显示选择浮窗，点击浏览器后再打开。
 
+## v0.1.3 update / 更新
+
+0.1.3 adds menu-bar-only startup and a login-startup switch. **The login-startup feature is experimental: the tested installation returned an unavailable ServiceManagement status, so enabling and next-login behavior are not yet verified.**
+
+- Menu-bar-only app (`LSUIElement` and accessory activation policy); no Dock or Cmd-Tab entry while running.
+- Ordinary launch and login launch do not open a settings window. Use the menu-bar icon → **查看浏览器与设置** when needed.
+- Incoming web links still show the browser chooser.
+- **登录时自动启动** is available in both the menu-bar menu and settings. It configures the native `SMAppService.mainApp` login item; no launch daemon, background agent plist or global startup script is installed.
+- The switch is off unless already enabled in system settings. If macOS requires approval, the app shows a pending status and offers the system Login Items pane; pending approval is not reported as active.
+- “开机启动” here means starting after you log into your macOS account, not running before login.
+- Install the app in Applications before enabling this option. Ad-hoc signing can be rejected by ServiceManagement on some systems; errors are shown instead of claiming success. Actual next-login behavior remains pending validation.
+- To uninstall, turn off the login startup switch and restore another default browser first.
+
 ## Download / 下载
 
-Download the Apple Silicon app ZIP from the [v0.1.2 preview release](https://github.com/luozhiyun993/DFBrowser/releases/tag/v0.1.2).
+Download the Apple Silicon app ZIP from the [v0.1.3 preview release](https://github.com/luozhiyun993/DFBrowser/releases/tag/v0.1.3).
 
-从 [Releases](https://github.com/luozhiyun993/DFBrowser/releases) 下载 `DFBrowser-0.1.2-macOS-arm64.zip`。它包含带蓝色分流图标的 `DFBrowser.app`。
+从 [Releases](https://github.com/luozhiyun993/DFBrowser/releases) 下载 `DFBrowser-0.1.3-macOS-arm64.zip`。它包含带蓝色分流图标的 `DFBrowser.app`。
 
 **Requirements:** Apple Silicon Mac; minimum deployment target macOS 13. Tested on macOS 15. Intel and older macOS versions have not been validated.
 
@@ -30,7 +43,7 @@ The app does **not** promise to intercept navigation inside browsers, in-app web
 
 1. Quit any older DFBrowser instance from its menu bar icon.
 2. Unzip the release and move `DFBrowser.app` to **Applications**. Keep just one installed app to avoid duplicate browser entries.
-3. Launch DFBrowser. Use **注册到系统浏览器列表** to register it; this does not change the default browser or reset the system database.
+3. Launch DFBrowser, then choose **查看浏览器与设置** from its menu-bar icon. Use **注册到系统浏览器列表** to register it; this does not change the default browser or reset the system database.
 4. Close and reopen **System Settings → Desktop & Dock → Default web browser**, then choose **DFBrowser**. The in-app **在系统设置中选择…** button can open that pane after confirmation.
 5. Open a normal HTTP/HTTPS link from another app. Select a browser in the floating chooser.
 
@@ -74,6 +87,7 @@ The app has no persistent link history. Pending URLs live in memory until opened
 
 ## Version history
 
+- **0.1.3**: menu-bar-only launch, no startup panel, native login-startup switch with approval/error states.
 - **0.1.2**: new app icon and packaged local installation.
 - **0.1.1**: explicit browser registration, improved setup state, user-driven system default selection.
 - **0.1.0**: initial browser discovery, chooser and link routing preview.

@@ -1,5 +1,6 @@
 import AppKit
 import SwiftUI
+import ServiceManagement
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -10,6 +11,7 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var defaultStatus = ""
     @Published var registrationMessage: String?
+    let loginItem = LoginItemController(service: SystemLoginItemService())
     private var setupError: String?
     private var queue = RequestQueue()
     var requestPresentation: (() -> Void)?
@@ -137,6 +139,7 @@ struct BrowserChooserView: View {
                 Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
+            if model.currentRequest == nil { LoginItemSettingsView(controller: model.loginItem) }
             Divider()
             footer
         }
@@ -268,6 +271,30 @@ struct BrowserChooserView: View {
     }
 }
 
+struct LoginItemSettingsView: View {
+    @ObservedObject var controller: LoginItemController
+    var body: some View {
+        VStack(alignment: .leading, spacing: 6) {
+            Toggle("登录时自动启动", isOn: Binding(
+                get: { controller.state.toggleIsOn },
+                set: { controller.setEnabled($0) }
+            ))
+            .toggleStyle(.switch)
+            Text(controller.state.description).font(.caption).foregroundStyle(.secondary)
+            if controller.state == .requiresApproval {
+                Button("打开系统登录项设置") { SMAppService.openSystemSettingsLoginItems() }
+                    .buttonStyle(.borderless)
+            }
+            if let error = controller.errorMessage {
+                Text(error).font(.caption).foregroundStyle(.red)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
+    }
+}
+
 struct BrowserRow: View {
     let browser: BrowserCandidate
     let number: Int
@@ -316,7 +343,7 @@ final class ChooserPanel: NSPanel {
 }
 
 @MainActor
-final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
+final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private let model = AppModel()
     private var panel: ChooserPanel?
     private var statusItem: NSStatusItem?
@@ -328,7 +355,21 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         model.requestPresentation = { [weak self] in self?.presentPanel() }
         model.dismissPresentation = { [weak self] in self?.panel?.orderOut(nil) }
         model.refreshBrowsers()
-        presentPanel()
+        model.loginItem.refresh()
+        if AppLaunchPolicy.shouldShowChooser(hasPendingLink: model.currentRequest != nil) { presentPanel() }
+        if CommandLine.arguments.contains("--verify-background") {
+            DispatchQueue.main.async {
+                let app = NSApplication.shared
+                let hasChooser = self.panel != nil
+                let passed = app.activationPolicy() == .accessory && self.statusItem != nil && !hasChooser && !app.isActive
+                print("background launch: \(passed ? "PASS" : "FAIL"); accessory=\(app.activationPolicy() == .accessory), menuBar=\(self.statusItem != nil), chooser=\(hasChooser), active=\(app.isActive)")
+                // AppKit owns internal status-bar windows. They are not app panels.
+                for window in app.windows { print("AppKit window: \(type(of: window)), visible=\(window.isVisible)") }
+                fflush(stdout)
+                if !passed { exit(1) }
+                app.terminate(nil)
+            }
+        }
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
@@ -343,6 +384,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
 
     func applicationDidBecomeActive(_ notification: Notification) {
         model.refreshDefaultStatus()
+        model.loginItem.refresh()
     }
 
     func applicationShouldTerminateAfterLastWindowClosed(_ sender: NSApplication) -> Bool { false }
@@ -359,12 +401,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         item.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "DFBrowser")
         item.button?.toolTip = "DFBrowser · 网页链接浏览器选择器"
         let menu = NSMenu()
+        menu.delegate = self
         let settings = NSMenuItem(title: "查看浏览器与设置", action: #selector(showSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
         let preview = NSMenuItem(title: "预览选择浮窗", action: #selector(showPreview), keyEquivalent: "")
         preview.target = self
         menu.addItem(preview)
+        menu.addItem(.separator())
+        let login = NSMenuItem(title: "登录时自动启动", action: #selector(toggleLoginAtStartup), keyEquivalent: "")
+        login.target = self
+        login.tag = 100
+        menu.addItem(login)
+        let approval = NSMenuItem(title: "打开系统登录项设置", action: #selector(openLoginSettings), keyEquivalent: "")
+        approval.target = self
+        approval.tag = 101
+        approval.isHidden = true
+        menu.addItem(approval)
         menu.addItem(.separator())
         let quit = NSMenuItem(title: "退出 DFBrowser", action: #selector(quitApp), keyEquivalent: "q")
         quit.target = self
@@ -373,8 +426,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate {
         statusItem = item
     }
 
+    func menuWillOpen(_ menu: NSMenu) {
+        model.loginItem.refresh()
+        let state = model.loginItem.state
+        menu.item(withTag: 100)?.state = state == .enabled ? .on : state == .requiresApproval ? .mixed : .off
+        menu.item(withTag: 100)?.title = state == .requiresApproval ? "登录时自动启动（待批准）" : "登录时自动启动"
+        menu.item(withTag: 101)?.isHidden = state != .requiresApproval
+    }
+
+    @objc private func toggleLoginAtStartup() {
+        model.loginItem.refresh()
+        model.loginItem.setEnabled(!model.loginItem.state.toggleIsOn)
+        if model.loginItem.errorMessage != nil { showSettings() }
+    }
+
+    @objc private func openLoginSettings() { SMAppService.openSystemSettingsLoginItems() }
+
     @objc private func showSettings() {
         model.refreshBrowsers()
+        model.loginItem.refresh()
         presentPanel()
     }
 

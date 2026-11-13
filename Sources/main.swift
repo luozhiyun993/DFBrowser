@@ -28,6 +28,10 @@ if arguments.contains("--list-browsers") {
     print("default status: \(snapshot.status(for: BrowserDiscovery.ownBundleID, setupError: nil))")
     print("registered candidate: \(BrowserRegistration.isRegisteredCandidate(bundleID: BrowserDiscovery.ownBundleID))")
     print("browsers: \(BrowserDiscovery.discover().count)")
+    print("agent bundle: \(Bundle.main.object(forInfoDictionaryKey: "LSUIElement") as? Bool ?? false)")
+    MainActor.assumeIsolated {
+        print("login at launch: \(SystemLoginItemService().state.description)")
+    }
 } else {
     MainActor.assumeIsolated {
         let application = NSApplication.shared
