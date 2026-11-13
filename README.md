@@ -6,7 +6,7 @@ A lightweight native macOS browser picker. When another app opens a web link thr
 
 ## Download / 下载
 
-Download the Apple Silicon app ZIP from the [latest release](https://github.com/luozhiyun993/DFBrowser/releases/latest).
+Download the Apple Silicon app ZIP from the [v0.1.2 preview release](https://github.com/luozhiyun993/DFBrowser/releases/tag/v0.1.2).
 
 从 [Releases](https://github.com/luozhiyun993/DFBrowser/releases) 下载 `DFBrowser-0.1.2-macOS-arm64.zip`。它包含带蓝色分流图标的 `DFBrowser.app`。
 
