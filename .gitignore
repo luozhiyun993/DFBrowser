@@ -1,0 +1,15 @@
+# Build outputs, caches and local files
+/dist/
+.build/
+.DS_Store
+*.app/
+*.dSYM/
+
+# Generated icon sizes are reproducible from the preserved source PNG
+/Resources/*.iconset/
+
+# Local secrets must never be committed
+.env
+.env.*
+*.pem
+*.key
