@@ -4,6 +4,10 @@ A lightweight native macOS browser picker. When another app opens a web link thr
 
 一个原生 macOS 浏览器选择器：其他软件通过系统打开网页链接时，先显示选择浮窗，点击浏览器后再打开。
 
+## v0.1.4 update / 更新
+
+0.1.4 adds **URL rules (网址规则)**: map host patterns to browsers (e.g. `*.google.com → Chrome`), so matching links open directly without the chooser. Rules can be edited in the menu-bar → **网址规则…** window, created from the chooser ("以后 … 都直接用所选浏览器打开"), and imported/exported as JSON. Hold **Option** while clicking a link to bypass rules. Text fields now support Cmd+C/V/X/A/Z. See [URL rules](#url-rules--网址规则).
+
 ## v0.1.3 update / 更新
 
 0.1.3 adds menu-bar-only startup and a login-startup switch. **The login-startup feature is experimental: the tested installation returned an unavailable ServiceManagement status, so enabling and next-login behavior are not yet verified.**
@@ -19,9 +23,9 @@ A lightweight native macOS browser picker. When another app opens a web link thr
 
 ## Download / 下载
 
-Download the Apple Silicon app ZIP from the [v0.1.3 preview release](https://github.com/luozhiyun993/DFBrowser/releases/tag/v0.1.3).
+Download the Apple Silicon app ZIP from the [v0.1.4 preview release](https://github.com/luozhiyun993/DFBrowser/releases/tag/v0.1.4).
 
-从 [Releases](https://github.com/luozhiyun993/DFBrowser/releases) 下载 `DFBrowser-0.1.3-macOS-arm64.zip`。它包含带蓝色分流图标的 `DFBrowser.app`。
+从 [Releases](https://github.com/luozhiyun993/DFBrowser/releases) 下载 `DFBrowser-0.1.4-macOS-arm64.zip`。它包含带蓝色分流图标的 `DFBrowser.app`。
 
 **Requirements:** Apple Silicon Mac; minimum deployment target macOS 13. Tested on macOS 15. Intel and older macOS versions have not been validated.
 
@@ -31,11 +35,32 @@ Download the Apple Silicon app ZIP from the [v0.1.3 preview release](https://git
 
 - SwiftUI + AppKit native app with no third-party runtime dependencies.
 - Discover installed browsers, show their icons and names, and refresh the list.
-- Choose a browser for each request. No remembered automatic destination.
+- Choose a browser for each request, or set up URL rules so matching links skip the chooser (see below).
 - Cancel with Esc; keyboard shortcuts 1–9; queued requests do not overwrite the current request.
 - No URL history storage, page fetching, analytics, or URL uploads.
 - Explicit registration as a browser candidate; default browser selection is performed by the user in System Settings.
 - Status checks both HTTP/HTTPS preferences and actual URL resolution to avoid reporting partial setup as success.
+
+### URL rules / 网址规则
+
+Menu-bar icon → **网址规则…** (or **编辑规则…** in settings) opens the rule editor. Each rule maps a host pattern to a browser, for example `*.google.com → Chrome`, `*.byte.com → Brave`.
+
+- `*.google.com` matches `google.com` and every subdomain (a leading `*.` always covers the bare domain, so `*.openai.*` matches `openai.com`, `chat.openai.com` and `openai.co.uk`); `docs.example.com` matches only that host; `*` matches every link (useful as a last catch-all). Pasted URLs are reduced to their host; ports and paths are ignored.
+- Rules are checked top to bottom and the first match wins; use the arrows to reorder.
+- In the chooser, tick **以后 … 都直接用所选浏览器打开** to save an exact-host rule for that site.
+- Hold **Option** while clicking a link to bypass rules and show the chooser. A batch is opened automatically only when all of its links match the same browser.
+- If the rule's browser is missing or fails to open, the chooser appears instead, so links are never dropped.
+- **导入… / 导出…** in the rule editor load or save a JSON file, so you can edit many rules at once in a text editor. On import choose **合并** (same pattern updates its browser, new ones are appended) or **替换**. `browser` may be a bundle ID or a browser name (case-insensitive, partial match allowed); invalid entries are skipped and listed:
+
+  ```json
+  {
+    "rules": [
+      { "pattern": "*.google.com", "browser": "Chrome" },
+      { "pattern": "*.byte.com", "browser": "com.brave.Browser" }
+    ]
+  }
+  ```
+- Rules are stored locally in the app's preferences (`local.DFBrowser` → `routingRules`); no link history is recorded.
 
 The app does **not** promise to intercept navigation inside browsers, in-app web views, or proprietary deep links. Browser profiles and incognito mode are not supported in this version. Tab/window behavior is controlled by the destination browser.
 
@@ -87,6 +112,7 @@ The app has no persistent link history. Pending URLs live in memory until opened
 
 ## Version history
 
+- **0.1.4**: URL rules with wildcard host patterns, remember-this-site from the chooser, JSON import/export, Option to bypass, standard edit shortcuts in text fields.
 - **0.1.3**: menu-bar-only launch, no startup panel, native login-startup switch with approval/error states.
 - **0.1.2**: new app icon and packaged local installation.
 - **0.1.1**: explicit browser registration, improved setup state, user-driven system default selection.

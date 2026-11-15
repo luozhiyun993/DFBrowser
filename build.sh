@@ -12,7 +12,7 @@ cp "$ROOT/Resources/Info.plist" "$APP/Contents/Info.plist"
 cp "$ROOT/Resources/DFBrowser.icns" "$APP/Contents/Resources/DFBrowser.icns"
 xcrun swiftc -swift-version 5 -O -target "$ARCH-apple-macosx13.0" \
     -sdk "$SDK" -module-cache-path "$DIST/ModuleCache" \
-    "$ROOT/Sources/Core.swift" "$ROOT/Sources/BrowserRegistration.swift" "$ROOT/Sources/LoginItem.swift" "$ROOT/Sources/App.swift" "$ROOT/Sources/main.swift" \
+    "$ROOT/Sources/Core.swift" "$ROOT/Sources/Routing.swift" "$ROOT/Sources/BrowserRegistration.swift" "$ROOT/Sources/LoginItem.swift" "$ROOT/Sources/App.swift" "$ROOT/Sources/main.swift" \
     -framework AppKit -framework SwiftUI -framework ServiceManagement -o "$MACOS/DFBrowser"
 plutil -lint "$APP/Contents/Info.plist"
 codesign --force --sign - "$APP"

@@ -1,6 +1,7 @@
 import AppKit
 import SwiftUI
 import ServiceManagement
+import UniformTypeIdentifiers
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -11,11 +12,33 @@ final class AppModel: ObservableObject {
     @Published var errorMessage: String?
     @Published var defaultStatus = ""
     @Published var registrationMessage: String?
+    @Published var rules: [RoutingRule] { didSet { ruleStore.save(rules) } }
+    /// Chooser checkbox: turn this choice into exact-host rules.
+    @Published var rememberChoice = false
+    @Published var ruleTransferMessage: String?
     let loginItem = LoginItemController(service: SystemLoginItemService())
+    private let ruleStore: RoutingRuleStore
     private var setupError: String?
     private var queue = RequestQueue()
     var requestPresentation: (() -> Void)?
     var dismissPresentation: (() -> Void)?
+    var requestRulesPresentation: (() -> Void)?
+    /// Injectable for tests; production resolves installed apps through Launch Services.
+    var applicationURLForBundleID: (String) -> URL? = { NSWorkspace.shared.urlForApplication(withBundleIdentifier: $0) }
+    var launcher: ([URL], URL, @escaping (Error?) -> Void) -> Void = { urls, appURL, completion in
+        let configuration = NSWorkspace.OpenConfiguration()
+        configuration.activates = true
+        // Always name the destination application. The default opener would loop
+        // back into DFBrowser once it becomes the system default browser.
+        NSWorkspace.shared.open(urls, withApplicationAt: appURL, configuration: configuration) { _, error in
+            DispatchQueue.main.async { completion(error) }
+        }
+    }
+
+    init(ruleStore: RoutingRuleStore = RoutingRuleStore()) {
+        self.ruleStore = ruleStore
+        self.rules = ruleStore.load()
+    }
 
     func refreshBrowsers() {
         browsers = BrowserDiscovery.discover()
@@ -26,7 +49,20 @@ final class AppModel: ObservableObject {
         defaultStatus = BrowserRegistration.snapshot().status(for: BrowserDiscovery.ownBundleID, setupError: setupError)
     }
 
-    func receive(_ urls: [URL]) {
+    /// Links matching a routing rule open directly; holding Option forces the chooser.
+    func receive(_ urls: [URL], applyRules: Bool = true) {
+        let valid = LinkValidation.uniqueWebURLs(urls)
+        if applyRules, !NSEvent.modifierFlags.contains(.option),
+           let bundleID = LinkRouter.bundleID(for: valid, rules: rules),
+           let appURL = applicationURLForBundleID(bundleID) {
+            launcher(valid, appURL) { [weak self] error in
+                guard let self, let error else { return }
+                // Fall back to the chooser so the link is never silently lost.
+                self.receive(valid, applyRules: false)
+                self.errorMessage = "规则指定的浏览器无法打开链接：\(error.localizedDescription)"
+            }
+            return
+        }
         guard queue.append(urls) else {
             errorMessage = "仅支持有效的 HTTP / HTTPS 网页链接。"
             requestPresentation?()
@@ -42,6 +78,7 @@ final class AppModel: ObservableObject {
         guard !isOpening else { return }
         if let request = currentRequest { queue.remove(request.id) }
         errorMessage = nil
+        rememberChoice = false
         synchronizeQueue()
         if currentRequest == nil { dismissPresentation?() }
     }
@@ -55,27 +92,118 @@ final class AppModel: ObservableObject {
         }
         isOpening = true
         errorMessage = nil
-        let configuration = NSWorkspace.OpenConfiguration()
-        configuration.activates = true
-        // Always name the destination application. The default opener would loop
-        // back into DFBrowser once it becomes the system default browser.
-        NSWorkspace.shared.open(request.urls, withApplicationAt: browser.applicationURL, configuration: configuration) { [weak self] _, error in
-            DispatchQueue.main.async {
-                guard let self else { return }
-                self.isOpening = false
-                if let error {
-                    self.errorMessage = "无法用 \(browser.name) 打开链接：\(error.localizedDescription)"
+        let remember = rememberChoice
+        launcher(request.urls, browser.applicationURL) { [weak self] error in
+            guard let self else { return }
+            self.isOpening = false
+            if let error {
+                self.errorMessage = "无法用 \(browser.name) 打开链接：\(error.localizedDescription)"
+            } else {
+                if remember {
+                    self.rules = LinkRouter.remembering(hosts: request.urls.compactMap(\.host), bundleID: browser.bundleID,
+                                                        browserName: browser.name, in: self.rules)
+                }
+                self.rememberChoice = false
+                self.queue.remove(request.id)
+                self.synchronizeQueue()
+                if self.currentRequest == nil {
+                    self.dismissPresentation?()
                 } else {
-                    self.queue.remove(request.id)
-                    self.synchronizeQueue()
-                    if self.currentRequest == nil {
-                        self.dismissPresentation?()
-                    } else {
-                        self.requestPresentation?()
-                    }
+                    self.requestPresentation?()
                 }
             }
         }
+    }
+
+    func addRule() {
+        let browser = browsers.first
+        rules.append(RoutingRule(pattern: "", bundleID: browser?.bundleID ?? "", browserName: browser?.name ?? ""))
+    }
+
+    func updateRule(_ id: UUID, _ change: (inout RoutingRule) -> Void) {
+        guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
+        change(&rules[index])
+    }
+
+    func exportRules() {
+        let panel = NSSavePanel()
+        panel.title = "导出网址规则"
+        panel.nameFieldStringValue = "DFBrowser-rules.json"
+        panel.allowedContentTypes = [.json]
+        presentFilePanel(panel) { [weak self] in
+            guard let self, let url = panel.url else { return }
+            do {
+                try RuleTransfer.export(self.rules).write(to: url, options: .atomic)
+                self.ruleTransferMessage = "已导出 \(self.rules.count) 条规则到 \(url.lastPathComponent)。"
+            } catch {
+                self.ruleTransferMessage = "导出失败：\(error.localizedDescription)"
+            }
+        }
+    }
+
+    func importRules() {
+        let panel = NSOpenPanel()
+        panel.title = "导入网址规则"
+        panel.allowedContentTypes = [.json]
+        panel.allowsMultipleSelection = false
+        presentFilePanel(panel) { [weak self] in
+            guard let self, let url = panel.url else { return }
+            self.refreshBrowsers()
+            let result: RuleImportResult
+            do {
+                result = try RuleTransfer.parse(Data(contentsOf: url), browsers: self.browsers)
+            } catch {
+                self.ruleTransferMessage = "导入失败：\(error.localizedDescription)"
+                return
+            }
+            guard !result.rules.isEmpty else {
+                self.ruleTransferMessage = "文件中没有可导入的规则。" + Self.skippedSummary(result.skipped)
+                return
+            }
+            var replace = false
+            if !self.rules.isEmpty {
+                let alert = NSAlert()
+                alert.messageText = "导入 \(result.rules.count) 条规则"
+                alert.informativeText = "合并：同名域名更新浏览器，新规则追加到末尾。替换：清空现有 \(self.rules.count) 条规则后导入。"
+                alert.addButton(withTitle: "合并")
+                alert.addButton(withTitle: "替换")
+                alert.addButton(withTitle: "取消")
+                switch alert.runModal() {
+                case .alertFirstButtonReturn: replace = false
+                case .alertSecondButtonReturn: replace = true
+                default: return
+                }
+            }
+            self.rules = replace ? result.rules : RuleTransfer.merge(result.rules, into: self.rules)
+            self.ruleTransferMessage = "已导入 \(result.rules.count) 条规则。" + Self.skippedSummary(result.skipped)
+        }
+    }
+
+    private static func skippedSummary(_ skipped: [String]) -> String {
+        guard !skipped.isEmpty else { return "" }
+        let shown = skipped.prefix(5).joined(separator: "、")
+        return "跳过 \(skipped.count) 条：\(shown)\(skipped.count > 5 ? " 等" : "")"
+    }
+
+    /// Attach to the (floating) rules window as a sheet so the panel is never hidden behind it.
+    private func presentFilePanel(_ panel: NSSavePanel, onOK: @escaping () -> Void) {
+        ruleTransferMessage = nil
+        if let window = NSApplication.shared.keyWindow {
+            panel.beginSheetModal(for: window) { response in
+                if response == .OK { onOK() }
+            }
+        } else if panel.runModal() == .OK {
+            onOK()
+        }
+    }
+
+    func deleteRule(_ id: UUID) { rules.removeAll { $0.id == id } }
+
+    func moveRule(_ id: UUID, by offset: Int) {
+        guard let index = rules.firstIndex(where: { $0.id == id }) else { return }
+        let target = index + offset
+        guard rules.indices.contains(target) else { return }
+        rules.swapAt(index, target)
     }
 
     func registerBrowserCandidate() {
@@ -131,6 +259,10 @@ struct BrowserChooserView: View {
             header
             linkCard
             browserList
+            if let request = model.currentRequest {
+                Toggle(rememberLabel(request), isOn: $model.rememberChoice)
+                    .toggleStyle(.checkbox).font(.system(size: 12)).disabled(model.isOpening)
+            }
             if let message = model.errorMessage {
                 Text(message).font(.system(size: 12)).foregroundStyle(.red)
                     .fixedSize(horizontal: false, vertical: true)
@@ -139,13 +271,37 @@ struct BrowserChooserView: View {
                 Text(message).font(.system(size: 12)).foregroundStyle(.secondary)
                     .fixedSize(horizontal: false, vertical: true)
             }
-            if model.currentRequest == nil { LoginItemSettingsView(controller: model.loginItem) }
+            if model.currentRequest == nil {
+                rulesCard
+                LoginItemSettingsView(controller: model.loginItem)
+            }
             Divider()
             footer
         }
         .padding(22)
         .frame(width: 480)
         .background(Color(nsColor: .windowBackgroundColor))
+    }
+
+    private func rememberLabel(_ request: LinkRequest) -> String {
+        var seen = Set<String>()
+        let hosts = request.urls.compactMap(\.host).filter { seen.insert($0.lowercased()).inserted }
+        let subject = hosts.count == 1 ? hosts[0] : "这 \(hosts.count) 个网站"
+        return "以后 \(subject) 都直接用所选浏览器打开"
+    }
+
+    private var rulesCard: some View {
+        HStack {
+            VStack(alignment: .leading, spacing: 3) {
+                Text("网址规则").font(.system(size: 13, weight: .medium))
+                Text(model.rules.isEmpty ? "未设置；所有链接都会弹出选择。" : "\(model.rules.count) 条规则，匹配的链接将直接打开。")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+            Button("编辑规则…") { model.requestRulesPresentation?() }
+        }
+        .padding(12)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 
     private var header: some View {
@@ -158,7 +314,7 @@ struct BrowserChooserView: View {
             VStack(alignment: .leading, spacing: 5) {
                 Text(model.currentRequest == nil ? "DFBrowser" : "用哪个浏览器打开？")
                     .font(.system(size: 20, weight: .semibold))
-                Text(model.currentRequest == nil ? "每次打开链接，由你选择浏览器。" : "点击浏览器打开 · Esc 取消")
+                Text(model.currentRequest == nil ? "按网址规则分流，其余链接由你选择浏览器。" : "点击浏览器打开 · Esc 取消")
                     .font(.system(size: 12)).foregroundStyle(.secondary)
             }
             Spacer()
@@ -248,7 +404,7 @@ struct BrowserChooserView: View {
                     ProgressView().controlSize(.small)
                     Text("正在打开…").font(.caption).foregroundStyle(.secondary)
                 } else {
-                    Text(model.queuedCount > 1 ? "另有 \(model.queuedCount - 1) 个请求等待选择" : "不自动选择 · 不记录链接历史")
+                    Text(model.queuedCount > 1 ? "另有 \(model.queuedCount - 1) 个请求等待选择" : "按住 Option 点链接可跳过规则 · 不记录历史")
                         .font(.caption).foregroundStyle(.secondary)
                 }
                 Spacer()
@@ -263,7 +419,7 @@ struct BrowserChooserView: View {
                 Button("在系统设置中选择…") { model.requestDefaultBrowser() }
                     .buttonStyle(.borderedProminent)
             }
-            Button("预览选择浮窗") { model.receive([URL(string: "https://example.com")!]) }
+            Button("预览选择浮窗") { model.receive([URL(string: "https://example.com")!], applyRules: false) }
                 .buttonStyle(.borderless)
             Text("注册不会更改默认浏览器；预览链接由你选好浏览器后打开。")
                 .font(.system(size: 11)).foregroundStyle(.secondary)
@@ -346,14 +502,15 @@ final class ChooserPanel: NSPanel {
 final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMenuDelegate {
     private let model = AppModel()
     private var panel: ChooserPanel?
+    private var rulesWindow: NSWindow?
     private var statusItem: NSStatusItem?
-    private var beganLaunching = false
 
     func applicationDidFinishLaunching(_ notification: Notification) {
-        beganLaunching = true
+        configureMainMenu()
         configureStatusItem()
         model.requestPresentation = { [weak self] in self?.presentPanel() }
         model.dismissPresentation = { [weak self] in self?.panel?.orderOut(nil) }
+        model.requestRulesPresentation = { [weak self] in self?.showRules() }
         model.refreshBrowsers()
         model.loginItem.refresh()
         if AppLaunchPolicy.shouldShowChooser(hasPendingLink: model.currentRequest != nil) { presentPanel() }
@@ -373,8 +530,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
     }
 
     func application(_ application: NSApplication, open urls: [URL]) {
+        // receive() presents the chooser itself when a choice is needed (or an
+        // error must be shown). Links routed by a rule must not open any window.
         model.receive(urls)
-        if beganLaunching { presentPanel() }
     }
 
     func applicationShouldHandleReopen(_ sender: NSApplication, hasVisibleWindows flag: Bool) -> Bool {
@@ -396,6 +554,30 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         return false
     }
 
+    /// Accessory apps show no menu bar, but AppKit still routes Cmd+X/C/V/A/Z
+    /// through the main menu's key equivalents. Without it, text fields can't paste.
+    private func configureMainMenu() {
+        let mainMenu = NSMenu()
+        let appItem = NSMenuItem()
+        let appMenu = NSMenu()
+        appMenu.addItem(withTitle: "关闭窗口", action: #selector(NSWindow.performClose(_:)), keyEquivalent: "w")
+        appItem.submenu = appMenu
+        mainMenu.addItem(appItem)
+        let editItem = NSMenuItem()
+        let edit = NSMenu(title: "编辑")
+        edit.addItem(withTitle: "撤销", action: Selector(("undo:")), keyEquivalent: "z")
+        let redo = edit.addItem(withTitle: "重做", action: Selector(("redo:")), keyEquivalent: "z")
+        redo.keyEquivalentModifierMask = [.command, .shift]
+        edit.addItem(.separator())
+        edit.addItem(withTitle: "剪切", action: #selector(NSText.cut(_:)), keyEquivalent: "x")
+        edit.addItem(withTitle: "复制", action: #selector(NSText.copy(_:)), keyEquivalent: "c")
+        edit.addItem(withTitle: "粘贴", action: #selector(NSText.paste(_:)), keyEquivalent: "v")
+        edit.addItem(withTitle: "全选", action: #selector(NSText.selectAll(_:)), keyEquivalent: "a")
+        editItem.submenu = edit
+        mainMenu.addItem(editItem)
+        NSApplication.shared.mainMenu = mainMenu
+    }
+
     private func configureStatusItem() {
         let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
         item.button?.image = NSImage(systemSymbolName: "arrow.triangle.branch", accessibilityDescription: "DFBrowser")
@@ -405,6 +587,9 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         let settings = NSMenuItem(title: "查看浏览器与设置", action: #selector(showSettings), keyEquivalent: "")
         settings.target = self
         menu.addItem(settings)
+        let rulesItem = NSMenuItem(title: "网址规则…", action: #selector(showRules), keyEquivalent: "")
+        rulesItem.target = self
+        menu.addItem(rulesItem)
         let preview = NSMenuItem(title: "预览选择浮窗", action: #selector(showPreview), keyEquivalent: "")
         preview.target = self
         menu.addItem(preview)
@@ -448,8 +633,28 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         presentPanel()
     }
 
+    @objc private func showRules() {
+        model.refreshBrowsers()
+        // The settings panel floats; hide it so it does not cover the editor.
+        if model.currentRequest == nil { panel?.orderOut(nil) }
+        if rulesWindow == nil {
+            let window = NSWindow(contentRect: NSRect(x: 0, y: 0, width: 600, height: 460),
+                                  styleMask: [.titled, .closable, .resizable], backing: .buffered, defer: false)
+            window.title = "网址规则"
+            window.isReleasedWhenClosed = false
+            window.level = .floating
+            window.collectionBehavior = [.moveToActiveSpace, .fullScreenAuxiliary]
+            window.contentMinSize = NSSize(width: 520, height: 320)
+            window.contentView = NSHostingView(rootView: RoutingRulesView(model: model))
+            window.center()
+            rulesWindow = window
+        }
+        NSApplication.shared.activate(ignoringOtherApps: true)
+        rulesWindow?.makeKeyAndOrderFront(nil)
+    }
+
     @objc private func showPreview() {
-        model.receive([URL(string: "https://example.com")!])
+        model.receive([URL(string: "https://example.com")!], applyRules: false)
     }
 
     @objc private func quitApp() { NSApplication.shared.terminate(nil) }
@@ -484,5 +689,106 @@ final class AppDelegate: NSObject, NSApplicationDelegate, NSWindowDelegate, NSMe
         } else { panel.center() }
         NSApplication.shared.activate(ignoringOtherApps: true)
         panel.makeKeyAndOrderFront(nil)
+    }
+}
+
+struct RoutingRulesView: View {
+    @ObservedObject var model: AppModel
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 12) {
+            VStack(alignment: .leading, spacing: 4) {
+                Text("网址规则").font(.system(size: 18, weight: .semibold))
+                Text("匹配规则的链接会直接用指定浏览器打开，不再弹出选择；从上到下取第一条匹配。")
+                    .font(.system(size: 12)).foregroundStyle(.secondary)
+                Text(verbatim: "例：*.google.com 匹配 google.com 及其所有子域名；docs.example.com 只匹配该域名；* 匹配全部链接。点链接时按住 Option 可临时弹出选择。")
+                    .font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            if model.rules.isEmpty {
+                Text("还没有规则。点击“添加规则”，或在选择浮窗中勾选“以后都直接用所选浏览器打开”。")
+                    .font(.system(size: 13)).foregroundStyle(.secondary)
+                    .frame(maxWidth: .infinity, maxHeight: .infinity)
+            } else {
+                ScrollView {
+                    VStack(spacing: 8) {
+                        ForEach(Array(model.rules.enumerated()), id: \.element.id) { index, rule in
+                            RoutingRuleRow(model: model, rule: rule, isFirst: index == 0,
+                                           isLast: index == model.rules.count - 1)
+                        }
+                    }.padding(.vertical, 1)
+                }
+                .frame(maxHeight: .infinity)
+            }
+            if let message = model.ruleTransferMessage {
+                Text(message).font(.system(size: 11)).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
+            HStack {
+                Button { model.addRule() } label: { Label("添加规则", systemImage: "plus") }
+                    .disabled(model.browsers.isEmpty)
+                Button { model.importRules() } label: { Label("导入…", systemImage: "square.and.arrow.down") }
+                Button { model.exportRules() } label: { Label("导出…", systemImage: "square.and.arrow.up") }
+                    .disabled(model.rules.isEmpty)
+                Spacer()
+                Button { model.refreshBrowsers() } label: { Label("刷新浏览器", systemImage: "arrow.clockwise") }
+                    .buttonStyle(.borderless)
+            }
+        }
+        .padding(20)
+        .frame(minWidth: 520, minHeight: 320)
+        .background(Color(nsColor: .windowBackgroundColor))
+    }
+}
+
+struct RoutingRuleRow: View {
+    @ObservedObject var model: AppModel
+    let rule: RoutingRule
+    let isFirst: Bool
+    let isLast: Bool
+
+    private var isValid: Bool { HostPattern.normalize(rule.pattern) != nil }
+    private var isInstalled: Bool { model.browsers.contains { $0.bundleID == rule.bundleID } }
+
+    var body: some View {
+        HStack(spacing: 8) {
+            VStack(alignment: .leading, spacing: 2) {
+                TextField("*.example.com", text: Binding(
+                    get: { rule.pattern },
+                    set: { value in model.updateRule(rule.id) { $0.pattern = value } }
+                ))
+                .textFieldStyle(.roundedBorder)
+                .font(.system(size: 13, design: .monospaced))
+                if !isValid {
+                    Text(rule.pattern.trimmingCharacters(in: .whitespaces).isEmpty ? "请输入域名" : "格式无效，规则不会生效")
+                        .font(.caption2).foregroundStyle(.red)
+                }
+            }
+            Image(systemName: "arrow.right").foregroundStyle(.secondary)
+            Picker("", selection: Binding(
+                get: { rule.bundleID },
+                set: { id in
+                    let name = model.browsers.first { $0.bundleID == id }?.name ?? id
+                    model.updateRule(rule.id) { $0.bundleID = id; $0.browserName = name }
+                }
+            )) {
+                ForEach(model.browsers) { browser in
+                    Text(browser.name).tag(browser.bundleID)
+                }
+                if !isInstalled {
+                    Text("\(rule.browserName.isEmpty ? rule.bundleID : rule.browserName)（未安装）").tag(rule.bundleID)
+                }
+            }
+            .labelsHidden()
+            .frame(width: 170)
+            Button { model.moveRule(rule.id, by: -1) } label: { Image(systemName: "chevron.up") }
+                .buttonStyle(.borderless).disabled(isFirst).help("上移（优先匹配）")
+            Button { model.moveRule(rule.id, by: 1) } label: { Image(systemName: "chevron.down") }
+                .buttonStyle(.borderless).disabled(isLast).help("下移")
+            Button { model.deleteRule(rule.id) } label: { Image(systemName: "trash") }
+                .buttonStyle(.borderless).help("删除规则")
+        }
+        .padding(10)
+        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: 10))
     }
 }

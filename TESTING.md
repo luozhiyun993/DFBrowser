@@ -1,5 +1,13 @@
 # Testing / 验收范围
 
+## v0.1.4 regression
+
+- 101 automated assertions pass, 0 failures. New coverage: host-pattern normalization (pasted URLs, case, ports, trailing dots, invalid input), wildcard matching (`*.google.com` covers bare domain and subdomains but not lookalikes or suffix-appended hosts; `*.openai.*` covers `openai.com`), first-match ordering, self-targeting and invalid rules skipped, mixed batches falling back to the chooser, remembered exact-host rules, rule persistence in an isolated defaults suite, JSON export/import round trip, browser resolution by bundle ID / name / partial name, merge semantics.
+- Model tests use an injected launcher and app resolver: matched links open without presenting the chooser; preview bypasses rules; uninstalled or failing rule browsers fall back to the chooser with an error.
+- `--verify-background` passed on the 0.1.4 build: `accessory=true, menuBar=true, chooser=false, active=false`.
+- Manually verified on the installed app: a rule-matched link (`openai.com` with `*.openai.*`) opened directly in the configured browser. Earlier builds in this cycle also opened the settings panel after a routed link and could not paste into the rule field; both were fixed (no unconditional panel presentation; hidden Edit main menu for key equivalents).
+- Not covered by automated tests: the AppDelegate URL entry point, Option-key bypass, import/export file panels and the rules editor UI.
+
 ## v0.1.3 regression
 
 - 54 automated assertions pass, including native-login state modeling with an injected fake service, enable/disable idempotence, approval handling, failure reporting and silent-startup policy.

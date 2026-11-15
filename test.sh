@@ -5,6 +5,6 @@ mkdir -p "$ROOT/dist/ModuleCache"
 ARCH="$(uname -m)"
 xcrun swiftc -swift-version 5 -target "$ARCH-apple-macosx13.0" \
     -module-cache-path "$ROOT/dist/ModuleCache" \
-    "$ROOT/Sources/Core.swift" "$ROOT/Sources/BrowserRegistration.swift" "$ROOT/Sources/LoginItem.swift" "$ROOT/Sources/App.swift" "$ROOT/Tests/CoreTests.swift" \
+    "$ROOT/Sources/Core.swift" "$ROOT/Sources/Routing.swift" "$ROOT/Sources/BrowserRegistration.swift" "$ROOT/Sources/LoginItem.swift" "$ROOT/Sources/App.swift" "$ROOT/Tests/CoreTests.swift" \
     -framework AppKit -framework SwiftUI -framework ServiceManagement -o "$ROOT/dist/CoreTests"
 "$ROOT/dist/CoreTests"
